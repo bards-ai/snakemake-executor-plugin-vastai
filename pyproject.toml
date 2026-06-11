@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "snakemake-executor-plugin-vastai"
+version = "0.1.0"
+description = "A Snakemake executor plugin for running jobs on Vast.ai GPU instances"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Michał Pogoda", email = "michal.pogoda@bards.ai" }]
+keywords = ["snakemake", "plugin", "executor", "vastai", "gpu", "cloud"]
+requires-python = ">=3.11"
+dependencies = [
+    "snakemake-interface-common >=1.17.0,<2.0.0",
+    "snakemake-interface-executor-plugins >=9.3.0,<10.0.0",
+    "vastai >=1.0.13,<2.0.0",
+]
+
+[project.urls]
+Repository = "https://github.com/bards-ai/snakemake-executor-plugin-vastai"
+Documentation = "https://snakemake.github.io/snakemake-plugin-catalog/plugins/executor/vastai.html"
+
+[dependency-groups]
+dev = [
+    "pytest >=8",
+    "snakemake >=9.22.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["snakemake_executor_plugin_vastai"]
