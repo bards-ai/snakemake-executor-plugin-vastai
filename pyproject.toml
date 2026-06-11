@@ -10,6 +10,15 @@ readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Michał Pogoda", email = "michal.pogoda@bards.ai" }]
 keywords = ["snakemake", "plugin", "executor", "vastai", "gpu", "cloud"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: System :: Distributed Computing",
+]
 requires-python = ">=3.11"
 dependencies = [
     "snakemake-interface-common >=1.17.0,<2.0.0",
