@@ -3,9 +3,11 @@ __copyright__ = "Copyright 2026, bards.ai"
 __email__ = "michal.pogoda@bards.ai"
 __license__ = "MIT"
 
+import atexit
 import base64
 import importlib.metadata
 import os
+import signal
 import re
 import shutil
 import subprocess
@@ -432,6 +434,12 @@ class Executor(RemoteExecutor):
                 )
 
         self._destroyed_instances = set()
+        self._rented_instances = set()
+        # Safety net: if this process dies between renting an instance
+        # and snakemake's normal cancel/teardown (e.g. SIGTERM, crash),
+        # destroy anything still rented. SIGKILL cannot be intercepted.
+        atexit.register(self._emergency_cleanup)
+        self._install_signal_cleanup()
         self.storage_mode = (
             self.workflow.storage_registry.default_storage_provider is not None
         )
@@ -609,6 +617,7 @@ class Executor(RemoteExecutor):
                 continue
             if response.get("success"):
                 instance_id = response["new_contract"]
+                self._rented_instances.add(instance_id)
                 self.logger.info(
                     f"Job {job.jobid} ({job.name}): rented Vast.ai instance "
                     f"{instance_id} ({offer.get('num_gpus')}x "
@@ -827,6 +836,53 @@ class Executor(RemoteExecutor):
         self.report_job_error(
             job_info, msg=f"Vast.ai instance {instance_id}: {msg} "
         )
+
+    def _emergency_cleanup(self):
+        """Destroy rented instances that survived normal teardown.
+
+        Runs via atexit and on SIGTERM/SIGHUP. Idempotent: instances already
+        destroyed through the regular paths are skipped, and a normal run
+        leaves nothing to do here.
+        """
+        if self.settings.keep_instances:
+            return
+        leaked = self._rented_instances - self._destroyed_instances
+        for instance_id in sorted(leaked):
+            self.logger.warning(
+                f"Process exiting with Vast.ai instance {instance_id} still "
+                "rented; destroying it now."
+            )
+            self._destroy_instance(instance_id)
+
+    def _install_signal_cleanup(self):
+        """Run the emergency cleanup on SIGTERM/SIGHUP before the previous
+        handler (or the default action) takes over. Without this, a plain
+        `kill` skips atexit handlers and leaks any instance rented between
+        job submission and registration."""
+
+        def chain(sig, prev):
+            def handler(signum, frame):
+                self._emergency_cleanup()
+                if callable(prev):
+                    prev(signum, frame)
+                elif prev is signal.SIG_IGN:
+                    pass
+                else:
+                    signal.signal(signum, signal.SIG_DFL)
+                    signal.raise_signal(signum)
+
+            return handler
+
+        for name in ("SIGTERM", "SIGHUP"):
+            sig = getattr(signal, name, None)
+            if sig is None:
+                continue
+            try:
+                signal.signal(sig, chain(sig, signal.getsignal(sig)))
+            except (ValueError, OSError):
+                # Not the main thread (or unsupported platform); atexit
+                # still covers ordinary interpreter shutdown.
+                pass
 
     def _destroy_instance(self, instance_id: int):
         if instance_id in self._destroyed_instances:

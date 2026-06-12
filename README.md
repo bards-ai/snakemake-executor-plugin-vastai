@@ -161,8 +161,9 @@ use scoped, revocable keys.
   (`vastai logs <id>`) — destroy them manually, they bill until then.
 - Flaky hosts happen on a marketplace: unrecoverable boot errors fail fast,
   so run with `--retries 2` to resubmit on a different machine.
-- The plugin destroys every instance it rents, even on failure or Ctrl-C.
-  After a hard kill (`kill -9`), check
+- The plugin destroys every instance it rents, even on failure, Ctrl-C,
+  plain `kill` (SIGTERM/SIGHUP), or interpreter exit. Only SIGKILL
+  (`kill -9`) cannot be intercepted — after one, check
   https://console.vast.ai/instances/ for leftovers.
 - Each job rents its own instance, so prefer fewer, larger jobs (or job
   grouping) over many tiny ones — boot overhead is paid per job.
