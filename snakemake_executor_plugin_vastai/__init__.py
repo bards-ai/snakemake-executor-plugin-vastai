@@ -386,10 +386,20 @@ def credential_envvars(environ: Mapping[str, str] = os.environ) -> dict:
     if gcp_path:
         try:
             with open(gcp_path, "rb") as f:
-                env[GCP_CREDENTIALS_CONTENT_VAR] = base64.b64encode(
-                    f.read()
-                ).decode()
-        except OSError:
+                content = f.read()
+            env[GCP_CREDENTIALS_CONTENT_VAR] = base64.b64encode(content).decode()
+            if "GOOGLE_CLOUD_PROJECT" not in env:
+                # User (authorized_user) credentials carry no project, and
+                # google.auth ignores their quota_project_id for project
+                # resolution — export it explicitly or remote clients fail
+                # with "Project was not passed".
+                import json
+
+                info = json.loads(content)
+                project = info.get("quota_project_id") or info.get("project_id")
+                if project:
+                    env["GOOGLE_CLOUD_PROJECT"] = project
+        except (OSError, ValueError):
             pass
     return env
 
@@ -648,6 +658,11 @@ class Executor(RemoteExecutor):
         # Declared envvars and storage plugin secrets (forwarded by Snakemake
         # itself) take precedence over ambient credentials.
         env.update(self.envvars())
+        # The gcs storage plugin ignores its own project setting and relies
+        # on google.auth's environment-based resolution, so mirror the
+        # setting into the variable the Google client libraries read.
+        if env.get("SNAKEMAKE_STORAGE_GCS_PROJECT"):
+            env["GOOGLE_CLOUD_PROJECT"] = env["SNAKEMAKE_STORAGE_GCS_PROJECT"]
         return env
 
     async def check_active_jobs(

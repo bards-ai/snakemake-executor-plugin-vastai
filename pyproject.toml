@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "snakemake-executor-plugin-vastai"
-version = "0.1.0"
+version = "0.1.1"
 description = "A Snakemake executor plugin for running jobs on Vast.ai GPU instances"
 readme = "README.md"
 license = { text = "MIT" }
