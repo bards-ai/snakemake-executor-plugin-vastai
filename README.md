@@ -47,13 +47,52 @@ Each instance receives two uploads before the job starts:
    above, `train.py` gets there this way — which is why the workflow must
    be a git repository and why an uncommitted-and-untracked script would be
    missing remotely (`git add` is enough, no commit needed). Files over
-   10 MB are skipped — declare those as `input:` instead.
+   10 MB are skipped — declare those as `input:` instead. In a large repo
+   (e.g. a monorepo) you usually don't want to ship everything — scope it
+   with the `deploy` resource (see below).
 2. **The job's declared `input:` files** (`data/train.parquet` above),
    preserving their relative paths.
 
 The job then runs in the same relative layout, and only its declared
 `output:` (and `log:`) files are copied back to your machine. Anything else
 written on the instance is discarded when the instance is destroyed.
+
+### Shipping only part of a large repository
+
+By default the whole git tree (point 1 above) is uploaded — fine for a small
+workflow, slow and wasteful in a monorepo. Restrict it to the code a rule
+actually needs with the per-rule **`deploy`** resource:
+
+```python
+rule train:
+    input:
+        "data/train.parquet"                       # data: a tracked input, fetched as usual
+    output:
+        "models/model.pt"
+    resources:
+        gpu=1,
+        deploy="train.py,requirements.txt,src/**",  # code: shipped to the instance
+    shell:
+        "pip install -r requirements.txt && python train.py {input} {output}"
+```
+
+`deploy` is a comma-separated list of paths/globs relative to the workflow
+directory (a bare directory ships everything under it). The Snakefile,
+`.smk` includes and config files are **always** shipped on top, so the
+remote workflow still loads. Lists from every rule are unioned, and a global
+default can be set with `--vastai-deploy-paths`; if neither is given, the
+whole tree is shipped (the default above).
+
+`deploy` is a **deployment hint, not a dependency**: it controls what lands
+on the instance, but editing a `deploy`d file does not on its own retrigger
+the job (use `--forcerun` / declare it as `input:` if you need that).
+
+> **No shared filesystem + a default storage provider?** Then a rule's
+> `input:`/`output:` paths resolve to storage objects, and `local()` would
+> force the job to run locally. Keep data I/O storage-backed and ship code
+> via `deploy` (it sidesteps both), e.g.
+> `--splits-dir "$(dirname {input.train})"` to read inputs from wherever the
+> storage plugin materialized them.
 
 ## Configuration
 
