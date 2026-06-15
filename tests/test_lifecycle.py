@@ -39,6 +39,7 @@ class FakeVast:
 class FakeJob:
     jobid = 1
     name = "rule_a"
+    output = []
 
 
 @pytest.fixture
