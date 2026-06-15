@@ -82,6 +82,8 @@ vastai-geolocation: EU    # region shortcut or country codes (PL,DE,CZ)
 | `--vastai-boot-timeout` | 1800 | Max seconds for an instance to start running |
 | `--vastai-no-forward-credentials` | off | Don't forward local cloud credentials to jobs |
 | `--vastai-keep-instances` | off | Don't destroy instances (debugging; **keeps billing!**) |
+| `--vastai-deploy-paths` | – | Ship only these comma-separated paths/globs (plus the Snakefile/`.smk`/config) instead of the whole `git ls-files` tree |
+| `--vastai-max-runtime` | 0 | Hard cap (s) on job runtime after the instance is `running`; force-finalize + destroy past it (0 = no cap) |
 
 By default only verified datacenter hosts are rented — slightly pricier,
 but they avoid the most common marketplace flakiness (Docker Hub pull rate

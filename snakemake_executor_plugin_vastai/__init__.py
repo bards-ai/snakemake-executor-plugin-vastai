@@ -236,6 +236,32 @@ class ExecutorSettings(ExecutorSettingsBase):
             "destroyed manually!",
         },
     )
+    deploy_paths: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Restrict the source files shipped to each instance to these "
+            "comma-separated paths/globs (relative to the working directory), "
+            "instead of the whole `git ls-files` tree. The Snakefile, any included "
+            "rule files (.smk) and config files are ALWAYS shipped so the workflow "
+            "still loads remotely; everything else (e.g. the scripts your rules "
+            "call) must be listed here. Globs use fnmatch and a bare directory "
+            "ships everything under it. Example: "
+            "'train.py,requirements-train.txt,model_card_template.md,scripts/**'.",
+        },
+    )
+    max_runtime: int = field(
+        default=0,
+        metadata={
+            "help": "Hard cap in seconds on how long a job may run after its "
+            "instance reaches the 'running' state, before it is force-finalized "
+            "and the instance destroyed (0 = no cap). Safety net against hosts "
+            "that finish the job but never flip to 'exited' (which would "
+            "otherwise bill indefinitely). At the cap, the job is reported "
+            "successful if its outputs are already present in storage, else "
+            "failed. Note: completion is normally detected the moment all of a "
+            "job's storage outputs appear, so this only fires for genuine hangs.",
+        },
+    )
 
 
 common_settings = CommonSettings(
@@ -443,6 +469,8 @@ class Executor(RemoteExecutor):
         self.storage_mode = (
             self.workflow.storage_registry.default_storage_provider is not None
         )
+        # Optionally narrow the deployed source set (default: whole git tree).
+        self._maybe_restrict_sources()
         if self.storage_mode:
             # Snakemake core skips the source upload when
             # can_transfer_local_files is set, so it is done here instead.
@@ -455,6 +483,43 @@ class Executor(RemoteExecutor):
                 "(--default-storage-provider s3) is faster and more robust."
             )
             self._init_ssh_transfer()
+
+    def _maybe_restrict_sources(self):
+        """Honor --vastai-deploy-paths: ship only the listed paths (plus the
+        Snakefile, any .smk includes and config files) instead of the entire
+        `git ls-files` tree. Implemented by wrapping DAG.get_sources(), which both
+        upload_sources() (storage mode) and write_source_archive() (SSH mode) use."""
+        if not self.settings.deploy_paths:
+            return
+        import fnmatch
+
+        patterns = [p.strip() for p in self.settings.deploy_paths.split(",") if p.strip()]
+        # Config files must always ship so the remote workflow can load.
+        always = {os.path.relpath(cf) for cf in self.workflow.configfiles}
+
+        def keep(f):
+            # Always keep the workflow definition itself.
+            if f in always or os.path.basename(f) == "Snakefile" or f.endswith(".smk"):
+                return True
+            for pat in patterns:
+                if f == pat or fnmatch.fnmatch(f, pat):
+                    return True
+                if f.startswith(pat.rstrip("/") + "/"):  # bare directory -> all under it
+                    return True
+            return False
+
+        dag = self.workflow.dag
+        original_get_sources = dag.get_sources
+
+        def restricted_get_sources():
+            kept = [f for f in original_get_sources() if keep(f)]
+            self.logger.info(
+                f"Deploying {len(kept)} source file(s) to instances "
+                f"(--vastai-deploy-paths active): {', '.join(sorted(kept))}"
+            )
+            return kept
+
+        dag.get_sources = restricted_get_sources
 
     def _init_ssh_transfer(self):
         for tool in ("ssh", "scp", "ssh-keygen"):
@@ -717,6 +782,31 @@ class Executor(RemoteExecutor):
         if status == "running":
             aux["seen_running"] = True
             aux["unreachable_since"] = None
+            aux.setdefault("running_since", time.time())
+            # Primary completion signal: the instance may finish the job but
+            # never flip to 'exited' (and `vastai logs` can be stale), so detect
+            # completion the moment all storage outputs exist — then finalize
+            # immediately instead of billing open-endedly.
+            if self._outputs_present(job_info.job):
+                self.logger.info(
+                    f"Vast.ai instance {instance_id}: all job outputs present "
+                    "in storage; finalizing as success."
+                )
+                self._finalize_success(job_info)
+                return False
+            # Backstop: force-finalize a job that runs past the cap without
+            # producing outputs (a genuine hang) so it cannot bill forever.
+            cap = self.settings.max_runtime
+            if cap and time.time() - aux["running_since"] > cap:
+                if self._outputs_present(job_info.job):
+                    self._finalize_success(job_info)
+                else:
+                    self._fail_job(
+                        job_info,
+                        f"job exceeded --vastai-max-runtime ({cap}s) without "
+                        "producing its outputs; destroying instance.",
+                    )
+                return False
             return True
 
         if status == "exited":
@@ -829,6 +919,35 @@ class Executor(RemoteExecutor):
                 "the container crashed. ",
                 aux_logs=[str(log_file)] if log_file else None,
             )
+
+    def _outputs_present(self, job: JobExecutorInterface) -> bool:
+        """True iff every storage-backed output of the job already exists in
+        storage. A reliable, provider-agnostic 'job finished successfully'
+        signal that does NOT depend on `vastai logs` or the instance flipping
+        to 'exited' (snakemake only materializes a job's outputs on success).
+        Returns False when the job has no storage outputs (signal unavailable)."""
+        storage_outs = [f for f in job.output if getattr(f, "is_storage", False)]
+        if not storage_outs:
+            return False
+        try:
+            return all(f.storage_object.exists() for f in storage_outs)
+        except Exception as e:
+            self.logger.debug(f"vastai: output-existence poll failed: {e}")
+            return False
+
+    def _finalize_success(self, job_info: SubmittedJobInfo):
+        """Finalize a job known to have succeeded (outputs present): save logs
+        best-effort, destroy the instance, report success — without relying on
+        parsing an exit code out of the (possibly stale) instance logs."""
+        instance_id = int(job_info.external_jobid)
+        try:
+            log_text = self.vast.logs(instance_id, tail="10000") or ""
+            if log_text:
+                (self.log_dir / f"{job_info.aux['label']}.log").write_text(log_text)
+        except Exception:
+            pass
+        self._destroy_instance(instance_id)
+        self.report_job_success(job_info)
 
     def _fail_job(self, job_info: SubmittedJobInfo, msg: str):
         instance_id = int(job_info.external_jobid)
