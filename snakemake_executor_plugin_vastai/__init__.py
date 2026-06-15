@@ -246,7 +246,10 @@ class ExecutorSettings(ExecutorSettingsBase):
             "still loads remotely; everything else (e.g. the scripts your rules "
             "call) must be listed here. Globs use fnmatch and a bare directory "
             "ships everything under it. Example: "
-            "'train.py,requirements-train.txt,model_card_template.md,scripts/**'.",
+            "'train.py,requirements-train.txt,model_card_template.md,scripts/**'. "
+            "Prefer declaring files per-rule via the `deploy` resource (e.g. "
+            "resources: deploy=\"train.py,scripts/**\") so each rule ships its own "
+            "code; this global setting is unioned with all rules' deploy resources.",
         },
     )
     max_runtime: int = field(
@@ -484,16 +487,36 @@ class Executor(RemoteExecutor):
             )
             self._init_ssh_transfer()
 
+    def _collect_deploy_patterns(self) -> list:
+        """Files to ship, from BOTH the global --vastai-deploy-paths setting AND each
+        rule's `deploy` resource (so a rule can declare its own code next to where it is
+        used, e.g. resources: deploy="train.py,scripts/**"). Returns the de-duplicated
+        union; empty means 'no restriction requested'."""
+        patterns: list = []
+        if self.settings.deploy_paths:
+            patterns += [p.strip() for p in self.settings.deploy_paths.split(",") if p.strip()]
+        try:
+            for job in self.workflow.dag.jobs:
+                spec = job.resources.get("deploy")
+                if spec:
+                    patterns += [p.strip() for p in str(spec).split(",") if p.strip()]
+        except Exception as e:
+            self.logger.debug(f"vastai: could not read per-rule deploy resources: {e}")
+        return sorted(set(patterns))
+
     def _maybe_restrict_sources(self):
-        """Honor --vastai-deploy-paths: ship only the listed paths (plus the
-        Snakefile, any .smk includes and config files) instead of the entire
-        `git ls-files` tree. Implemented by wrapping DAG.get_sources(), which both
-        upload_sources() (storage mode) and write_source_archive() (SSH mode) use."""
-        if not self.settings.deploy_paths:
-            return
+        """Ship only the files the workflow needs instead of the entire `git ls-files`
+        tree. The set is the union of --vastai-deploy-paths and every rule's `deploy`
+        resource; the Snakefile, `.smk` includes and config files are ALWAYS kept so the
+        remote workflow still loads. If nothing requests a restriction, the default
+        (whole-tree) behaviour is preserved. Wraps DAG.get_sources(), used by both
+        upload_sources() (storage mode) and write_source_archive() (SSH mode)."""
         import fnmatch
 
-        patterns = [p.strip() for p in self.settings.deploy_paths.split(",") if p.strip()]
+        patterns = self._collect_deploy_patterns()
+        if not patterns:
+            return  # no global flag and no rule requested a restriction -> ship everything
+
         # Config files must always ship so the remote workflow can load.
         always = {os.path.relpath(cf) for cf in self.workflow.configfiles}
 
@@ -515,7 +538,7 @@ class Executor(RemoteExecutor):
             kept = [f for f in original_get_sources() if keep(f)]
             self.logger.info(
                 f"Deploying {len(kept)} source file(s) to instances "
-                f"(--vastai-deploy-paths active): {', '.join(sorted(kept))}"
+                f"(scoped by deploy paths/resources): {', '.join(sorted(kept))}"
             )
             return kept
 

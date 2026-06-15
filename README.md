@@ -82,7 +82,7 @@ vastai-geolocation: EU    # region shortcut or country codes (PL,DE,CZ)
 | `--vastai-boot-timeout` | 1800 | Max seconds for an instance to start running |
 | `--vastai-no-forward-credentials` | off | Don't forward local cloud credentials to jobs |
 | `--vastai-keep-instances` | off | Don't destroy instances (debugging; **keeps billing!**) |
-| `--vastai-deploy-paths` | – | Ship only these comma-separated paths/globs (plus the Snakefile/`.smk`/config) instead of the whole `git ls-files` tree |
+| `--vastai-deploy-paths` | – | Ship only these comma-separated paths/globs (plus the Snakefile/`.smk`/config) instead of the whole `git ls-files` tree. Unioned with every rule's `deploy` resource — prefer declaring files per-rule (`resources: deploy="train.py,scripts/**"`) |
 | `--vastai-max-runtime` | 0 | Hard cap (s) on job runtime after the instance is `running`; force-finalize + destroy past it (0 = no cap) |
 
 By default only verified datacenter hosts are rented — slightly pricier,
